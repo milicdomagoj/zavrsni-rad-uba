@@ -70,13 +70,6 @@ da izbjegneš ponovno čitanje sirovih podataka.
   radi na izvornom Windowsu za verzije ≥ 2.11 — sve je prebačeno na PyTorch.
 - scikit-learn (Isolation Forest), pandas, numpy, matplotlib, pyarrow
 
-## Napomena o NHE metodi
-
-Bodovanje **NHE (Normalized Histogram Entropy) + hyper-binning** u projektu `uba_hmm`
-implementirano je kao principijelna i branjiva **rekonstrukcija** metode, budući da
-izvorni rad nije bio dostupan. Logika je dokumentirana u komentarima
-(`src/nhe_scoring.py`) i lako se prilagođava točnoj definiciji.
-
 ---
 
 *Repozitorij je izrađen kao praktični dio završnog rada na Fakultetu organizacije i
