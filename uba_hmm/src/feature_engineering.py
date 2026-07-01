@@ -1,9 +1,11 @@
+
 import os
 import numpy as np
 import pandas as pd
 
 from . import config as C
 from . import data_loading as D
+
 
 def _logon_daily():
     df = pd.read_csv(D.find_file("logon"),
@@ -26,6 +28,7 @@ def _logon_daily():
     ).reset_index()
     return g
 
+
 def _device_daily():
     df = pd.read_csv(D.find_file("device"),
                      usecols=D.pick_cols("device", ["date", "user", "activity"]))
@@ -40,14 +43,16 @@ def _device_daily():
     ).reset_index()
     return g
 
+
 def _file_daily():
     df = pd.read_csv(D.find_file("file"),
                      usecols=D.pick_cols("file", ["date", "user", "filename"]))
     df["day"] = pd.to_datetime(df["date"], format=C.DATE_FMT, errors="coerce").dt.date
     df = df.dropna(subset=["day"])
     g = df.groupby(["user", "day"]).agg(num_file_events=("filename", "size")).reset_index()
-    g["num_files_to_usb"] = g["num_file_events"]
+    g["num_files_to_usb"] = g["num_file_events"]   # u r4.2 file log = kopiranje na medij
     return g
+
 
 def _email_daily():
     cols = D.pick_cols("email", ["date", "user", "to", "cc", "bcc", "from", "size", "attachments"])
@@ -73,6 +78,7 @@ def _email_daily():
     out = pd.concat(parts, ignore_index=True).groupby(["user", "day"], as_index=False).sum()
     return out
 
+
 def _http_daily():
     cols = D.pick_cols("http", ["date", "user", "url"])
     pat = "|".join(C.SUSPICIOUS_SITES)
@@ -87,6 +93,7 @@ def _http_daily():
     out = pd.concat(parts, ignore_index=True).groupby(["user", "day"], as_index=False).sum()
     return out
 
+
 BASE_NUMERIC = [
     "num_logons", "num_after_hours_logons", "num_night_logons", "num_weekend_logons",
     "num_distinct_pcs", "num_usb_connects", "num_after_hours_usb",
@@ -95,7 +102,9 @@ BASE_NUMERIC = [
     "total_recipients", "num_http", "num_suspicious_http",
 ]
 
+
 def build_daily_features(use_cache=True, verbose=True):
+    """Glavna funkcija: vrati bogatu dnevnu matricu znacajki + oznake."""
     csv_cache = C.DAILY_CACHE.replace(".parquet", ".csv")
     if use_cache:
         try:
@@ -134,9 +143,11 @@ def build_daily_features(use_cache=True, verbose=True):
     df["day"] = pd.to_datetime(df["day"])
     df = df.sort_values(["user", "day"]).reset_index(drop=True)
 
+    # ---- ukupna dnevna aktivnost ----
     df["total_activity"] = df[["num_logons", "num_usb_connects", "num_file_events",
                                "num_emails", "num_http"]].sum(axis=1)
 
+    # ---- indikatori ----
     df["is_weekend"] = (df["day"].dt.weekday >= 5).astype(int)
     df["has_night_activity"] = (df["num_night_logons"] > 0).astype(int)
     df["has_usb"] = (df["num_usb_connects"] > 0).astype(int)
@@ -146,12 +157,19 @@ def build_daily_features(use_cache=True, verbose=True):
     if verbose:
         print("[*] Dodavanje naprednih ponasajnih znacajki (z-score, rolling, novelty)...")
 
+    # ---- z-score po korisniku (KAUZALNI baseline: samo prethodni dani) ----
+    # Baseline (prosjek/devijacija) racuna se EXPANDING prozorom pomaknutim za 1 dan,
+    # pa svaki (korisnik, dan) koristi iskljucivo SVOJU PROSLOST - buduci i anomalni
+    # dani NE ulaze u baseline (za razliku od globalnog groupby().mean()/std()).
+    # Prvi dani korisnika jos nemaju baseline -> z = 0.
     for col in BASE_NUMERIC + ["total_activity"]:
         g = df.groupby("user")[col]
-        m = g.transform("mean")
-        s = g.transform("std").replace(0, np.nan)
-        df["z_" + col] = ((df[col] - m) / s).fillna(0.0)
+        m = g.transform(lambda x: x.expanding().mean().shift())
+        sd = g.transform(lambda x: x.expanding().std().shift()).replace(0, np.nan)
+        df["z_" + col] = ((df[col] - m) / sd).fillna(0.0)
 
+    # ---- rolling statistike (prozor 7 dana po korisniku) ----
+    # koristimo groupby+transform (cuva strukturu DataFrame-a, ne dira indeks)
     for col in ["total_activity", "num_usb_connects", "num_files_to_usb",
                 "num_external_emails", "num_suspicious_http"]:
         grp = df.groupby("user")[col]
@@ -159,12 +177,15 @@ def build_daily_features(use_cache=True, verbose=True):
         df["roll7_std_" + col] = grp.transform(
             lambda s: s.rolling(7, min_periods=1).std()).fillna(0.0)
 
+    # ---- vrijeme od zadnje aktivnosti (u danima) ----
     df["days_since_prev"] = df.groupby("user")["day"].diff().dt.days.fillna(0)
 
+    # ---- frekvencija aktivnosti: kumulativni udio aktivnih dana ----
     df["active_today"] = (df["total_activity"] > 0).astype(int)
     df["activity_frequency"] = (df.groupby("user")["active_today"].cumsum() /
                                 (df.groupby("user").cumcount() + 1))
 
+    # ---- novelty: prvi put da korisnik radi nesto ----
     for col in ["num_usb_connects", "num_night_logons", "num_suspicious_http"]:
         nz = (df[col] > 0).astype(int)
         prior = df.groupby("user")[col].apply(
@@ -172,6 +193,7 @@ def build_daily_features(use_cache=True, verbose=True):
         ).reset_index(level=0, drop=True)
         df["first_" + col] = ((nz == 1) & (prior == 0)).astype(int)
 
+    # ---- oznake ----
     ins = D.load_insiders()
     mal = set()
     for _, w in ins.iterrows():
@@ -197,10 +219,13 @@ def build_daily_features(use_cache=True, verbose=True):
         print(f"[*] Gotovo. Matrica: {df.shape[0]} redaka x {df.shape[1]} stupaca")
     return df
 
+
 def feature_columns(df):
+    """Popis stupaca znacajki (sve numericko osim identifikatora i oznake)."""
     exclude = {"user", "day", "malicious", "active_today"}
     return [c for c in df.columns if c not in exclude and
             pd.api.types.is_numeric_dtype(df[c])]
+
 
 if __name__ == "__main__":
     df = build_daily_features(use_cache=False, verbose=True)
