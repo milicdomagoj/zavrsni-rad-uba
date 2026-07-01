@@ -1,3 +1,4 @@
+
 import os
 import sys
 import pandas as pd
@@ -10,6 +11,7 @@ from src.model import run_all_models, run_isolation_forest, prepare_matrix
 from src import visualize
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
+
 
 def main(contamination=0.01):
     print("=" * 60)
@@ -40,6 +42,11 @@ def main(contamination=0.01):
     metrics_rel, score_dict, y = run_all_models(feats, rel_cols, contamination=contamination)
     print(metrics_rel.to_string())
 
+    from src.model import precision_recall_at_n
+    n_days = feats["day"].nunique()
+    print(f"\n      Isolation Forest - rangiranje (relativne znacajke, {n_days} dana):")
+    precision_recall_at_n(y, score_dict["Isolation Forest"], n_days=n_days)
+
     os.makedirs(RESULTS_DIR, exist_ok=True)
     metrics_abs.to_csv(os.path.join(RESULTS_DIR, "metrike_apsolutne.csv"))
     metrics_rel.to_csv(os.path.join(RESULTS_DIR, "metrike_relativne.csv"))
@@ -63,6 +70,7 @@ def main(contamination=0.01):
     print("\n" + "=" * 60)
     print(" Gotovo. Usporedi metrike_apsolutne.csv i metrike_relativne.csv")
     print("=" * 60)
+
 
 if __name__ == "__main__":
     main()
