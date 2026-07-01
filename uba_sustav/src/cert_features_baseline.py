@@ -1,15 +1,22 @@
+
+
 import numpy as np
 import pandas as pd
 
+# Znacajke za koje racunamo z-score po korisniku
 ZSCORE_BASE = ["num_after_hours_logons", "num_usb_connects", "num_after_hours_usb",
                "num_files_to_usb", "num_external_emails", "total_email_size",
                "num_suspicious_http", "num_http"]
 
+# Znacajke za "prvi put" indikatore (mapiraju na CERT scenarije)
 NOVELTY_BASE = ["num_usb_connects", "num_after_hours_logons", "num_suspicious_http"]
 
+# Apsolutne znacajke koje zadrzavamo (same po sebi indikativne)
 KEEP_ABSOLUTE = ["num_suspicious_http"]
 
+
 def add_relative_features(df):
+   
     df = df.sort_values(["user", "day"]).reset_index(drop=True)
     model_cols = []
 
@@ -17,8 +24,8 @@ def add_relative_features(df):
         if col not in df.columns:
             continue
         grp = df.groupby("user")[col]
-        mean = grp.transform("mean")
-        std = grp.transform("std").replace(0, np.nan)
+        mean = grp.transform(lambda x: x.expanding().mean().shift())
+        std = grp.transform(lambda x: x.expanding().std().shift()).replace(0, np.nan)
         z = (df[col] - mean) / std
         zcol = "z_" + col
         df[zcol] = z.fillna(0.0)
@@ -28,6 +35,7 @@ def add_relative_features(df):
         if col not in df.columns:
             continue
         nonzero = (df[col] > 0).astype(int)
+        # broj prethodnih dana (prije danasnjeg) s nenultom vrijednoscu
         prior = df.groupby("user")[col].apply(
             lambda s: (s > 0).astype(int).cumsum().shift(fill_value=0)
         ).reset_index(level=0, drop=True)
@@ -40,6 +48,7 @@ def add_relative_features(df):
             model_cols.append(col)
 
     return df, model_cols
+
 
 if __name__ == "__main__":
     import os, sys
