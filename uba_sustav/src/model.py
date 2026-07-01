@@ -1,3 +1,4 @@
+
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
@@ -5,28 +6,36 @@ from sklearn.ensemble import IsolationForest
 from sklearn.svm import OneClassSVM
 from sklearn.neighbors import LocalOutlierFactor
 from sklearn.metrics import (precision_score, recall_score, f1_score,
-                             roc_auc_score, confusion_matrix, roc_curve)
+                             roc_auc_score, average_precision_score,
+                             confusion_matrix, roc_curve)
 
 RANDOM_SEED = 42
 
+
 def prepare_matrix(features_df, feat_cols):
+    """Standardiziraj znacajke (nulta sredina, jedinicna varijanca)."""
     X = features_df[feat_cols].values.astype(float)
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     y = features_df["malicious"].values
     return X_scaled, y, scaler
 
+
 def _scores_to_labels(scores, contamination):
+    """Pretvori kontinuirane anomaly scoreove u binarne oznake po pragu."""
     threshold = np.quantile(scores, 1 - contamination)
     return (scores >= threshold).astype(int)
+
 
 def run_isolation_forest(X, contamination=0.05):
     model = IsolationForest(n_estimators=200, contamination=contamination,
                             random_state=RANDOM_SEED)
     model.fit(X)
+    # Veci score = vise anomalno (zato negiramo decision_function)
     scores = -model.decision_function(X)
     preds = (model.predict(X) == -1).astype(int)
     return scores, preds
+
 
 def run_ocsvm(X, contamination=0.05):
     model = OneClassSVM(kernel="rbf", gamma="scale", nu=contamination)
@@ -35,17 +44,20 @@ def run_ocsvm(X, contamination=0.05):
     preds = (model.predict(X) == -1).astype(int)
     return scores, preds
 
+
 def run_lof(X, contamination=0.05):
     model = LocalOutlierFactor(n_neighbors=20, contamination=contamination)
     preds = (model.fit_predict(X) == -1).astype(int)
     scores = -model.negative_outlier_factor_
     return scores, preds
 
+
 def run_baseline(features_df, feat_cols, contamination=0.05):
     col = "num_files_to_usb"
     scores = features_df[col].values.astype(float)
     preds = _scores_to_labels(scores, contamination)
     return scores, preds
+
 
 def evaluate(y_true, y_pred, scores, name):
     metrics = {
@@ -54,8 +66,35 @@ def evaluate(y_true, y_pred, scores, name):
         "recall": recall_score(y_true, y_pred, zero_division=0),
         "f1": f1_score(y_true, y_pred, zero_division=0),
         "roc_auc": roc_auc_score(y_true, scores) if len(set(y_true)) > 1 else float("nan"),
+        # PR-AUC (average precision) - vazniji od ROC-AUC kod jake neuravnotezenosti
+        "pr_auc": average_precision_score(y_true, scores) if len(set(y_true)) > 1 else float("nan"),
     }
     return metrics
+
+
+def precision_recall_at_n(y_true, scores, ns=(50, 100, 200, 500, 1000, 2000), n_days=None):
+   
+    y_true = np.asarray(y_true)
+    order = np.argsort(scores)[::-1]          # od najanomalnijeg prema dolje
+    total_pos = int(y_true.sum())
+    header = "      Top N | pogodaka | precision@N | recall@N"
+    if n_days:
+        header += "  | lazni alarmi/dan"
+    print(header)
+    print("      " + "-" * (len(header) - 6))
+    rows = []
+    for n in ns:
+        topn = order[:n]
+        hits = int(y_true[topn].sum())
+        prec = hits / n
+        rec = hits / total_pos if total_pos else 0.0
+        line = f"      {n:5d} | {hits:8d} | {prec:11.3f} | {rec:8.3f}"
+        if n_days:
+            line += f"  | {(n - hits) / n_days:15.2f}"
+        print(line)
+        rows.append({"N": n, "hits": hits, "precision_at_n": prec, "recall_at_n": rec})
+    return rows
+
 
 def run_all_models(features_df, feat_cols, contamination=0.05):
     X, y, _ = prepare_matrix(features_df, feat_cols)
@@ -81,6 +120,7 @@ def run_all_models(features_df, feat_cols, contamination=0.05):
 
     metrics_df = pd.DataFrame(results).set_index("model")
     return metrics_df, score_dict, y
+
 
 if __name__ == "__main__":
     print("model.py se koristi kao modul (pozovite ga iz main_cert_full.py).")
